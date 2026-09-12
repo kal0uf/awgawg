@@ -14,28 +14,23 @@ using System.Threading.Tasks;
 namespace stellarisKIT.Services;
 
 /// <summary>
-/// Verified Windhawk provisioning flow:
-/// 1. Query GitHub releases API for the latest release and pick the asset whose
-///    name contains windhawk_setup_offline.exe.
-/// 2. Download that asset to a temp path.
-/// 3. Run the NSIS installer with /S (silent), hidden window, and await exit.
-/// 4. Locate windhawk-cli.exe under %ProgramFiles%\Windhawk and run:
-///      data import "<json>" --confirm-app-restart --yes
-///    with WorkingDirectory = the Windhawk install folder.
-/// 5. Optional: for mods that have updates available, run:
-///      mod list --update-available --json
-///      then mod update <modId> for each returned id.
+/// Windhawk provisioning flow — direct-download variant copied from AutoOS AppsStage.cs:
+/// 1. Download windhawk_setup.exe from pinned URL https://github.com/ramensoftware/windhawk/releases/download/2.0.0-alpha.5/windhawk_setup.exe
+///    to %TEMP%\windhawk_setup.exe (AutoOS: DownloadHelper.Download(directUrl, Path.GetTempPath(), "windhawk_setup.exe"))
+/// 2. Run NSIS installer with /S (silent), hidden window, wait for exit (AutoOS: Process.Start(... "/S", Hidden))
+/// 3. Import KaliteOS.json from Assets/Windhawk/KaliteOS.json (also mods-bundled.json) via:
+///    windhawk-cli.exe data import "json" --confirm-app-restart --yes   WorkingDirectory = %ProgramFiles%\Windhawk
+/// 4. Update mods:  mod list --update-available --json  →  mod update &lt;id&gt;  (AutoOS ProcessActions.UpdateWindhawkMods)
 ///
-/// Anything beyond what the CLI import supports (extra HKLM\SOFTWARE\Windhawk
-/// registry keys) requires TrustedInstaller, not just administrator, so this
-/// service does not attempt raw registry writes to Engine\Mods itself.
+/// No GitHub API is used — the installer URL is pinned per user request. No AutoOS remote is used.
 /// </summary>
 public sealed class WindhawkInstallerService
 {
     private static readonly HttpClient _http = new();
 
-    private const string ReleasesApi = "https://api.github.com/repos/ramensoftware/windhawk/releases";
-    private const string OfflineInstallerNameHint = "windhawk_setup_offline.exe";
+    // Direct pinned URL — replaces GitHub API + offline asset lookup (AutoOS pattern).
+    public const string DirectDownloadUrl = "https://github.com/ramensoftware/windhawk/releases/download/2.0.0-alpha.5/windhawk_setup.exe";
+    public const string DirectVersion = "2.0.0-alpha.5";
 
     private readonly WindhawkDetectionService _detection = new();
 
@@ -53,48 +48,13 @@ public sealed class WindhawkInstallerService
     // ------------------------------------------------------------------
 
     /// <summary>
-    /// Queries https://api.github.com/repos/ramensoftware/windhawk/releases (GET,
-    /// User-Agent header), takes the first (latest) release, and finds the asset
-    /// whose name contains windhawk_setup_offline.exe.
+    /// Direct-download replacement for the GitHub API lookup.
+    /// Returns the pinned URL + version (mirrors AutoOS AppsStage.cs hard-coded download).
     /// </summary>
-    public async Task<(string Version, string DownloadUrl)> ResolveLatestOfflineInstallerAsync(
+    public Task<(string Version, string DownloadUrl)> ResolveLatestOfflineInstallerAsync(
         CancellationToken ct = default)
     {
-        using var request = new HttpRequestMessage(HttpMethod.Get, ReleasesApi);
-        request.Headers.UserAgent.ParseAdd("stellarisKIT-WindhawkInstaller/1.0");
-
-        using var response = await _http.SendAsync(request, ct);
-        response.EnsureSuccessStatusCode();
-
-        var doc = JsonDocument.Parse(await response.Content.ReadAsStringAsync(ct));
-        var root = doc.RootElement;
-
-        if (root.GetArrayLength() == 0)
-            throw new InvalidOperationException("GitHub Windhawk releases API returned no releases.");
-
-        // First element is the latest release (GitHub returns them newest-first).
-        var latest = root[0];
-        string version = latest.TryGetProperty("tag_name", out var tag)
-            ? tag.GetString() ?? ""
-            : "";
-
-        string? downloadUrl = null;
-        foreach (var asset in latest.GetProperty("assets").EnumerateArray())
-        {
-            string name = asset.GetProperty("name").GetString() ?? "";
-            if (name.Contains(OfflineInstallerNameHint, StringComparison.OrdinalIgnoreCase))
-            {
-                downloadUrl = asset.GetProperty("browser_download_url").GetString();
-                break;
-            }
-        }
-
-        if (string.IsNullOrEmpty(downloadUrl))
-            throw new InvalidOperationException(
-                $"Latest Windhawk release does not include an asset matching '{OfflineInstallerNameHint}'. " +
-                "The offline installer may have been renamed or removed from the release.");
-
-        return (version, downloadUrl);
+        return Task.FromResult((DirectVersion, DirectDownloadUrl));
     }
 
     // ------------------------------------------------------------------
@@ -102,21 +62,24 @@ public sealed class WindhawkInstallerService
     // ------------------------------------------------------------------
 
     /// <summary>
-    /// Downloads the offline installer to a temp file. Returns the temp path.
+    /// Downloads the installer to a temp file (AutoOS: DownloadHelper.Download(directUrl, Path.GetTempPath(), "windhawk_setup.exe")).
     /// The returned path is tracked for cleanup.
     /// </summary>
     public async Task<string> DownloadInstallerAsync(
         string downloadUrl, IProgress<string>? status = null, CancellationToken ct = default)
     {
-        string tempPath = Path.Combine(Path.GetTempPath(), "windhawk_setup_offline.exe");
+        // Use windhawk_setup.exe (pinned direct URL) — matches requested link.
+        string tempPath = Path.Combine(Path.GetTempPath(), "windhawk_setup.exe");
 
-        // Avoid reusing a stale/locked temp file from a previous failed run.
+        // Avoid reusing a stale/locked temp file from a previous failed run (AutoOS kills locking processes).
         if (File.Exists(tempPath))
             File.Delete(tempPath);
 
-        status?.Report($"Downloading Windhawk offline installer from GitHub...");
+        status?.Report($"Downloading Windhawk {DirectVersion} from GitHub (direct)...");
 
-        using var response = await _http.GetAsync(downloadUrl, HttpCompletionOption.ResponseHeadersRead, ct);
+        using var request = new HttpRequestMessage(HttpMethod.Get, downloadUrl);
+        request.Headers.UserAgent.ParseAdd("stellarisKIT-WindhawkInstaller/1.0");
+        using var response = await _http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct);
         response.EnsureSuccessStatusCode();
 
         await using var content = await response.Content.ReadAsStreamAsync(ct);
@@ -138,6 +101,7 @@ public sealed class WindhawkInstallerService
     /// <summary>
     /// Runs the downloaded NSIS installer with /S (silent) and hidden window style,
     /// and awaits exit. Requires elevation for the engine service install.
+    /// Mirrors AutoOS AppsStage.cs: Process.Start(new ProcessStartInfo { FileName = windhawk_setup.exe, Arguments = "/S", Hidden }).WaitForExitAsync()
     /// </summary>
     public async Task InstallSilentlyAsync(
         string installerPath, IProgress<string>? status = null, CancellationToken ct = default)
@@ -154,10 +118,11 @@ public sealed class WindhawkInstallerService
 
         status?.Report("Installing Windhawk silently...");
 
+        // Direct invocation (AutoOS) — not cmd /c start /wait. Hidden, no window.
         var psi = new ProcessStartInfo
         {
-            FileName = "cmd.exe",
-            Arguments = $"/c start /wait \"\" \"{installerPath}\" /S /STANDARD",
+            FileName = installerPath,
+            Arguments = "/S",
             UseShellExecute = false,
             CreateNoWindow = true,
             WindowStyle = ProcessWindowStyle.Hidden,

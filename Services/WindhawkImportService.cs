@@ -78,18 +78,6 @@ public sealed class WindhawkImportService
         var backup = ParseBackup(jsonFilePath);
         var result = new WindhawkImportResult();
 
-        // Safety: snapshot current Windhawk config before touching anything.
-        status?.Report("Backing up current Windhawk configuration...");
-        try
-        {
-            BackupExistingConfiguration(installation);
-        }
-        catch (Exception ex)
-        {
-            Debug.WriteLine($"Windhawk config backup failed: {ex.Message}");
-            status?.Report($"Warning: could not back up existing Windhawk config ({ex.Message}).");
-        }
-
         // Strategy 1: native CLI (Windhawk 2.0+).
         if (!string.IsNullOrEmpty(installation.CliPath) && File.Exists(installation.CliPath))
         {
@@ -434,41 +422,6 @@ public sealed class WindhawkImportService
         JsonElement { ValueKind: JsonValueKind.False } => "0",
         _ => value.ToString() ?? string.Empty,
     };
-
-    // ------------------------------------------------------------------
-    // Safety: config snapshot before overwriting
-    // ------------------------------------------------------------------
-
-    /// <summary>
-    /// Exports the current HKLM\SOFTWARE\Windhawk key (reg export) into
-    /// %ProgramData%\stellarisKIT\windhawk-backups, alongside the backup file
-    /// itself, so an import can be reverted.
-    /// </summary>
-    private static void BackupExistingConfiguration(WindhawkInstallationInfo installation)
-    {
-        string backupDir = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
-            "stellarisKIT", "windhawk-backups");
-        Directory.CreateDirectory(backupDir);
-
-        string stamp = DateTime.Now.ToString("yyyyMMdd-HHmmss");
-        string regBackup = Path.Combine(backupDir, $"windhawk-registry-{stamp}.reg");
-        string jsonBackup = Path.Combine(backupDir, $"windhawk-source-{stamp}.json");
-
-        if (File.Exists(jsonBackup)) return; // already snapshotted this run
-
-        var psi = new ProcessStartInfo
-        {
-            FileName = "reg.exe",
-            Arguments = $"export \"{WindhawkRegistryKey}\" \"{regBackup}\" /y",
-            UseShellExecute = false,
-            CreateNoWindow = true,
-        };
-        using (var process = Process.Start(psi))
-        {
-            process?.WaitForExit(15000);
-        }
-    }
 
     /// <summary>Restarts the Windhawk service so it reloads its mod profile.</summary>
     private static void RestartWindhawkService()

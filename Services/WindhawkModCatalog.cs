@@ -53,12 +53,10 @@ public static class WindhawkModCatalog
     }
 
     /// <summary>
-    /// Absolute path to the bundled default Windhawk backup JSON, or null when the
-    /// asset isn't present (shouldn't happen in a shipped build).
-    ///
-    /// In packaged builds the asset is co-located next to the executable after
-    /// the first-run copy, so the unpackaged probe below is also the reliable
-    /// packaged path once that copy has happened.
+    /// Absolute path to the bundled KaliteOS Windhawk backup JSON.
+    /// Primary: Assets/Windhawk/KaliteOS.json (C:\Users\AutoOS\Downloads\KaliteOS.json copy).
+    /// Fallback: Assets/Windhawk/mods-bundled.json (kept in sync with KaliteOS).
+    /// Fallback 2: Assets/KaliteOS.json
     /// </summary>
     public static string? BundledBackupPath
     {
@@ -67,8 +65,16 @@ public static class WindhawkModCatalog
             var assemblyDir = AppContext.BaseDirectory;
             if (string.IsNullOrEmpty(assemblyDir)) return null;
 
-            var candidate = Path.Combine(assemblyDir, "Assets", "Windhawk", "mods-bundled.json");
-            return File.Exists(candidate) ? candidate : null;
+            foreach (var candidate in new[]
+            {
+                Path.Combine(assemblyDir, "Assets", "Windhawk", "KaliteOS.json"),
+                Path.Combine(assemblyDir, "Assets", "Windhawk", "mods-bundled.json"),
+                Path.Combine(assemblyDir, "Assets", "KaliteOS.json"),
+            })
+            {
+                if (File.Exists(candidate)) return candidate;
+            }
+            return null;
         }
     }
 

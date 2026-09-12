@@ -94,40 +94,6 @@
                             IsEnabled="{Binding Windhawk.CanRun, Mode=OneWay}" />
                     </StackPanel>
                 </toolkit:SettingsCard>
-                <toolkit:SettingsCard
-                    Header="Backup file"
-                    Description="A windhawk-user-data-v1 JSON export from Windhawk's backup/restore feature.">
-                    <StackPanel Orientation="Horizontal" Spacing="8">
-                        <StackPanel Orientation="Vertical" MaxWidth="260">
-                            <TextBlock
-                                Text="{Binding Windhawk.BackupFileName, Mode=OneWay}"
-                                TextTrimming="CharacterEllipsis"
-                                Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
-                            <CheckBox
-                                IsChecked="{Binding Windhawk.UseBundledDefaults, Mode=TwoWay}"
-                                Content="Use bundled default mod list"
-                                Margin="0,4,0,0" />
-                        </StackPanel>
-                        <Button
-                            Content="Browse..."
-                            Click="BrowseBackup_Click" />
-                    </StackPanel>
-                </toolkit:SettingsCard>
-                <toolkit:SettingsCard
-                    Header="Progress"
-                    Description="{Binding Windhawk.StatusText, Mode=OneWay}">
-                    <ProgressBar
-                        Width="200"
-                        Value="{Binding Windhawk.DownloadPercent, Mode=OneWay, FallbackValue=0}"
-                        Maximum="100"
-                        IsIndeterminate="{Binding Windhawk.DownloadPercent, Mode=OneWay, Converter={StaticResource NullToIndeterminateConverter}}"
-                        Visibility="{Binding Windhawk.IsBusy, Mode=OneWay, Converter={StaticResource BoolToVisibilityConverter}}" />
-                </toolkit:SettingsCard>
-                <TextBlock
-                    Text="Windhawk is a third-party tool (windhawk.net). Its latest stable release is downloaded from the official GitHub releases and installed silently with the vendor's documented switches. Existing Windhawk settings are backed up before any import."
-                    TextWrapping="Wrap"
-                    Foreground="{ThemeResource TextFillColorSecondaryBrush}"
-                    Margin="1,0,0,12" />
             </StackPanel>
         </ScrollViewer>
     </Grid>

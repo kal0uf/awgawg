@@ -34,37 +34,13 @@ public sealed partial class WindowsSettingsPage : Page
             _ = ViewModel.LoadAsync();
     }
 
-    private async void BrowseBackup_Click(object sender, RoutedEventArgs e)
-    {
-        var picker = new FileOpenPicker
-        {
-            SuggestedStartLocation = PickerLocationId.Downloads,
-            ViewMode = PickerViewMode.List,
-        };
-        picker.FileTypeFilter.Add(".json");
-
-        // Unpackaged WinUI 3 pickers need the owning window handle.
-        var hwnd = WinRT.Interop.WindowNative.GetWindowHandle(App.MainWindow);
-        WinRT.Interop.InitializeWithWindow.Initialize(picker, hwnd);
-
-        var file = await picker.PickSingleFileAsync();
-        if (file is not null)
-        {
-            Windhawk.BackupFilePath = file.Path;
-            // Picking a custom file opts out of the bundled default.
-            Windhawk.UseBundledDefaults = false;
-        }
-    }
-
     private async void StartWindhawk_Click(object sender, RoutedEventArgs e)
     {
         // Confirmation before installing anything or overwriting settings.
         var dialog = new ContentDialog
         {
-            Title = "Install Windhawk & import settings?",
-            Content = Windhawk.IsInstalled
-                ? "Your current Windhawk mods and settings will be backed up, then overwritten with the selected backup file. Continue?"
-                : "The latest Windhawk release will be downloaded from its official GitHub releases and installed silently (administrator rights required). Then the selected backup will be imported over any existing settings. Continue?",
+            Title = "Install Windhawk & import KaliteOS settings?",
+            Content = "Continue?",
             PrimaryButtonText = "Continue",
             CloseButtonText = "Cancel",
             DefaultButton = ContentDialogButton.Primary,
@@ -75,5 +51,24 @@ public sealed partial class WindowsSettingsPage : Page
             return;
 
         await Windhawk.RunProvisioningAsync();
+    }
+
+    private async void TestImport_Click(object sender, RoutedEventArgs e)
+    {
+        // Test import — no reinstall, just windhawk-cli data import (AutoOS pattern) + mod updates using KaliteOS.json.
+        var dialog = new ContentDialog
+        {
+            Title = "Test import KaliteOS settings?",
+            Content = "Continue?",
+            PrimaryButtonText = "Continue",
+            CloseButtonText = "Cancel",
+            DefaultButton = ContentDialogButton.Primary,
+            XamlRoot = XamlRoot,
+        };
+
+        if (await dialog.ShowAsync() != ContentDialogResult.Primary)
+            return;
+
+        await Windhawk.TestImportAsync();
     }
 }

@@ -5,6 +5,7 @@ using stellarisKIT.Services;
 using Microsoft.UI.Xaml.Controls;
 using System;
 using System.IO;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Collections.ObjectModel;
@@ -26,7 +27,6 @@ public partial class WindhawkProvisioningViewModel : ObservableObject
     private CancellationTokenSource? _cts;
 
     [ObservableProperty] private WindhawkInstallationInfo _installation = WindhawkInstallationInfo.NotInstalled;
-    [ObservableProperty] private string? _backupFilePath;
     [ObservableProperty] private bool _isBusy;
     [ObservableProperty] private string _statusText = string.Empty;
     [ObservableProperty] private double? _downloadPercent;
@@ -35,20 +35,10 @@ public partial class WindhawkProvisioningViewModel : ObservableObject
     [ObservableProperty] private InfoBarSeverity _messageSeverity = InfoBarSeverity.Informational;
 
     /// <summary>
-    /// True when the user has asked to use the bundled default mod list instead of
-    /// a manually selected file. In that case BackupFilePath stays null and the
-    /// import path uses the bundled asset copied to a writable location.
+    /// KaliteOS bundled file — always from Assets/Windhawk/KaliteOS.json (copied to mods-bundled.json).
+    /// No backup-file picker; the AutoOS remote is never used.
     /// </summary>
-    [ObservableProperty] private bool _useBundledDefaults = false;
-
-    /// <summary>
-    /// The file that will actually be imported. When UseBundledDefaults is true,
-    /// this is the writable copy of the bundled asset; otherwise it is
-    /// BackupFilePath.
-    /// </summary>
-    public string? EffectiveBackupFilePath => UseBundledDefaults
-        ? WindhawkModCatalog.EnsureBundledBackupOnDisk()
-        : BackupFilePath;
+    public string? EffectiveBackupFilePath => WindhawkModCatalog.EnsureBundledBackupOnDisk();
 
     public bool IsInstalled => Installation.IsInstalled;
     public bool IsCliAvailable => Installation.CliPath is not null;
@@ -61,27 +51,19 @@ public partial class WindhawkProvisioningViewModel : ObservableObject
         OnPropertyChanged(nameof(IsInstalled));
         OnPropertyChanged(nameof(IsCliAvailable));
         OnPropertyChanged(nameof(InstallStatusText));
-    }
-
-    partial void OnBackupFilePathChanged(string? value)
-    {
-        OnPropertyChanged(nameof(BackupFileName));
+        OnPropertyChanged(nameof(CanTestImport));
         OnPropertyChanged(nameof(CanRun));
-        OnPropertyChanged(nameof(EffectiveBackupFilePath));
     }
 
-    partial void OnUseBundledDefaultsChanged(bool value)
+    public bool CanRun => !IsBusy && !string.IsNullOrEmpty(EffectiveBackupFilePath) && File.Exists(EffectiveBackupFilePath);
+    // Test import is only valid when Windhawk is actually installed (mirrors AutoOS: windhawk-cli.exe must exist)
+    public bool CanTestImport => !IsBusy && Installation.IsInstalled && !string.IsNullOrEmpty(EffectiveBackupFilePath) && File.Exists(EffectiveBackupFilePath);
+
+    partial void OnIsBusyChanged(bool value)
     {
-        OnPropertyChanged(nameof(BackupFileName));
         OnPropertyChanged(nameof(CanRun));
-        OnPropertyChanged(nameof(EffectiveBackupFilePath));
+        OnPropertyChanged(nameof(CanTestImport));
     }
-
-    public string BackupFileName => UseBundledDefaults
-        ? "Bundled default mod list"
-        : (string.IsNullOrEmpty(BackupFilePath) ? "No file selected" : Path.GetFileName(BackupFilePath));
-
-    public bool CanRun => !IsBusy && !string.IsNullOrEmpty(EffectiveBackupFilePath);
 
     public void RefreshDetection()
     {
@@ -161,9 +143,7 @@ public partial class WindhawkProvisioningViewModel : ObservableObject
                 DownloadPercent = p.DownloadPercent;
             });
 
-            StatusText = UseBundledDefaults
-                ? "Importing bundled default mod list..."
-                : "Importing settings...";
+            StatusText = "Importing KaliteOS settings...";
             DownloadPercent = null;
 
             var importStatus = new Progress<string>(s => StatusText = s);
@@ -196,14 +176,80 @@ public partial class WindhawkProvisioningViewModel : ObservableObject
             _cts = null;
             // Re-detect: an install just happened (or state changed underneath us).
             Installation = _detection.Detect();
+        }
+    }
 
-            // After a successful import of the bundled list, keep UseBundledDefaults
-            // true so the next run is reproducible; the user can still switch to a
-            // custom file if they want.
-            if (string.IsNullOrEmpty(Message) || Message.Contains("Imported"))
+    /// <summary>
+    /// Test-only import — does NOT reinstall Windhawk, just runs the settings import.
+    /// Copied flow from AutoOS AppsStage.cs:
+    ///   await DownloadHelper.Download(jsonUrl, Path.GetTempPath(), "windhawk.json");
+    ///   await Process.Start(windhawk-cli.exe, $"data import \"{json}\" --confirm-app-restart --yes", WorkingDir=Windhawk).WaitForExitAsync();
+    ///   await ProcessActions.UpdateWindhawkMods();
+    /// This is exposed as a separate "Test Import Settings" button in the UI so the import
+    /// can be verified without re-downloading/re-installing the Windhawk binary.
+    /// </summary>
+    [RelayCommand]
+    public async Task TestImportAsync()
+    {
+        string? path = EffectiveBackupFilePath;
+
+        // Always use the KaliteOS bundled file from Assets/Windhawk/KaliteOS.json (via WindhawkModCatalog).
+        if (string.IsNullOrEmpty(path) || !File.Exists(path))
+        {
+            ShowMessage($"KaliteOS settings file not found at: {path ?? "(null)"}", InfoBarSeverity.Error);
+            return;
+        }
+
+        if (!Installation.IsInstalled)
+        {
+            ShowMessage("Windhawk is not installed — install it first before testing import.", InfoBarSeverity.Warning);
+            return;
+        }
+
+        IsBusy = true;
+        ClearMessage();
+        StatusText = "Testing import (windhawk-cli data import)...";
+        _cts = new CancellationTokenSource();
+
+        try
+        {
+            // Prefer the installer service's CLI import (AutoOS-style) when CLI is available,
+            // otherwise fall back to the generic import service (registry path).
+            if (!string.IsNullOrEmpty(Installation.CliPath) && File.Exists(Installation.CliPath!))
             {
-                // Nothing to do — leave UseBundledDefaults as the user set it.
+                var progress = new Progress<string>(s => StatusText = s);
+                var result = await _installer.ImportSettingsAsync(path!, progress, _cts.Token);
+                ShowMessage(
+                    result.Success
+                        ? $"Test import succeeded (exit {result.ExitCode}): {result.Stdout.Trim().Split('\n').LastOrDefault()?.Trim() ?? "ok"}"
+                        : $"Test import returned exit {result.ExitCode}: {(string.IsNullOrWhiteSpace(result.Stderr) ? result.Stdout : result.Stderr).Trim()}",
+                    result.Success ? InfoBarSeverity.Success : InfoBarSeverity.Warning);
+                StatusText = result.Success ? "Test import done." : "Test import had issues.";
             }
+            else
+            {
+                var progress = new Progress<string>(s => StatusText = s);
+                var importResult = await _import.ImportBackupAsync(path!, Installation, progress, _cts.Token);
+                ShowMessage($"[Test] {importResult.SummaryText}", importResult.Skipped > 0 ? InfoBarSeverity.Warning : InfoBarSeverity.Success);
+                StatusText = "Test import done.";
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            StatusText = "Cancelled.";
+            ShowMessage("Test import cancelled.", InfoBarSeverity.Warning);
+        }
+        catch (Exception ex)
+        {
+            StatusText = "Failed.";
+            ShowMessage($"Test import failed: {ex.Message}", InfoBarSeverity.Error);
+        }
+        finally
+        {
+            IsBusy = false;
+            _cts?.Dispose();
+            _cts = null;
+            Installation = _detection.Detect();
         }
     }
 }
